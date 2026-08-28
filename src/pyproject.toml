@@ -1,0 +1,14 @@
+[project]
+name = "tlsa-sync"
+version = "0.1.0"
+description = "Mailcow-friendly TLSA record synchronization for deSEC"
+requires-python = ">=3.12"
+dependencies = [
+    "dnspython>=2.6,<3",
+    "httpx>=0.27,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+]
