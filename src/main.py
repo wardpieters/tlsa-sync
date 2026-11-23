@@ -1,16 +1,21 @@
-"""Poll TLSA records and synchronize them to deSEC."""
+"""Derive TLSA records from Mailcow TLS files and synchronize them to deSEC."""
 
 from __future__ import annotations
 
 import logging
 import os
-import socket
 import time
 from dataclasses import dataclass
-from typing import cast
+from hashlib import sha256
+from pathlib import Path
 
-import dns.exception
-import dns.resolver
+from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    load_pem_private_key,
+)
 
 from providers.desec import DesecClient
 
@@ -22,8 +27,7 @@ class Settings:
     domains: tuple[str, ...]
     desec_zone: str
     tlsa_port: int
-    dns_server: str
-    dns_port: int
+    mailcow_ssl_dir: Path
     timeout: float
     interval: float
     desec_token: str
@@ -38,17 +42,14 @@ class Settings:
             for domain in os.environ.get("DOMAIN_LIST", "").split(",")
             if domain.strip()
         )
-        required = {"DOMAIN_LIST": domains, "DNS_SERVER": os.environ.get("DNS_SERVER")}
-        missing = [name for name, value in required.items() if not value]
-        if missing:
-            raise ValueError(f"Missing required environment variable(s): {', '.join(missing)}")
+        if not domains:
+            raise ValueError("Missing required environment variable: DOMAIN_LIST")
 
         return cls(
             domains=domains,
             desec_zone=_required("DESEC_ZONE").rstrip("."),
             tlsa_port=_positive_int("TLSA_PORT", 25),
-            dns_server=str(required["DNS_SERVER"]),
-            dns_port=_positive_int("DNS_PORT", 53),
+            mailcow_ssl_dir=Path(_required("MAILCOW_SSL_DIR")),
             timeout=_positive_float("TIMEOUT_SECONDS", 5.0),
             interval=_positive_float("POLL_INTERVAL_SECONDS", 300.0),
             desec_token=_required("DESEC_TOKEN"),
@@ -85,35 +86,19 @@ def _positive_float(name: str, default: float) -> float:
     return value
 
 
-def _resolve_nameserver(server: str) -> list[str]:
-    addresses = socket.getaddrinfo(server, None, type=socket.SOCK_DGRAM)
-    nameservers = list(
-        dict.fromkeys(
-            cast(str, address[4][0])
-            for address in addresses
-            if isinstance(address[4][0], str)
-        )
-    )
+def _read_tlsa_records(ssl_dir: Path) -> tuple[str, ...]:
+    leaf = x509.load_pem_x509_certificate((ssl_dir / "nochain.pem").read_bytes())
+    fullchain = x509.load_pem_x509_certificates((ssl_dir / "cert.pem").read_bytes())
+    if leaf != fullchain[0]:
+        raise ValueError("nochain.pem does not match the first certificate in cert.pem")
 
-    if not nameservers:
-        raise OSError(f"Could not resolve DNS server hostname: {server}")
+    key = load_pem_private_key((ssl_dir / "key.pem").read_bytes(), password=None)
+    leaf_spki = leaf.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    key_spki = key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    if leaf_spki != key_spki:
+        raise ValueError("key.pem does not match the certificate in nochain.pem")
 
-    return nameservers
-
-
-def _normalize_record_text(record: object) -> str:
-    return " ".join(str(record).split())
-
-
-def lookup_tlsa(settings: Settings, domain: str) -> tuple[str, ...]:
-    resolver = dns.resolver.Resolver(configure=False)
-    resolver.nameservers = _resolve_nameserver(settings.dns_server)
-    resolver.port = settings.dns_port
-    resolver.timeout = settings.timeout
-    resolver.lifetime = settings.timeout
-    answer = resolver.resolve(f"_{settings.tlsa_port}._tcp.{domain}", "TLSA")
-
-    return tuple(sorted({_normalize_record_text(record) for record in answer}))
+    return (f"3 1 1 {sha256(leaf_spki).hexdigest()}",)
 
 
 def _desec_subname(settings: Settings, domain: str) -> str:
@@ -129,22 +114,9 @@ def _desec_subname(settings: Settings, domain: str) -> str:
     return service if not hostname else f"{service}.{hostname}"
 
 
-def synchronize_domain(settings: Settings, client: DesecClient, domain: str) -> bool | None:
-    try:
-        records = lookup_tlsa(settings, domain)
-    except (dns.exception.DNSException, OSError) as error:
-        LOG.error(
-            "Could not query TLSA records for %s via %s:%s within %ss: %s [%s]",
-            domain,
-            settings.dns_server,
-            settings.dns_port,
-            settings.timeout,
-            error,
-            type(error).__name__,
-        )
-
-        return None
-
+def synchronize_domain(
+    settings: Settings, client: DesecClient, domain: str, records: tuple[str, ...]
+) -> bool:
     subname = _desec_subname(settings, domain)
     changed = client.upsert_rrset(settings.desec_zone, subname, records, settings.desec_ttl)
 
@@ -169,9 +141,16 @@ def synchronize_domain(settings: Settings, client: DesecClient, domain: str) -> 
 
 
 def synchronize_all(settings: Settings, client: DesecClient) -> None:
+    ssl_dir = settings.mailcow_ssl_dir
+    try:
+        records = _read_tlsa_records(ssl_dir)
+    except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as error:
+        LOG.error("Could not derive TLSA records from %s: %s", ssl_dir, error)
+        return
+
     for domain in settings.domains:
         try:
-            synchronize_domain(settings, client, domain)
+            synchronize_domain(settings, client, domain, records)
         except Exception as error:
             LOG.error(
                 "Could not synchronize TLSA RRset for %s in deSEC zone %s: %s [%s]",
