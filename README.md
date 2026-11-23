@@ -7,11 +7,11 @@ to deSEC. By default it publishes `_25._tcp.<domain>` for every FQDN in
 
 ## How it works
 
-1. Read `nochain.pem` (leaf certificate), `key.pem` (private key), and `cert.pem`
-   (full chain) directly from `MAILCOW_SSL_DIR`.
-2. Confirm that the leaf certificate matches the first certificate in the full
-   chain and that its public key matches the private key. Generate a `3 1 1`
-   TLSA record using the SHA-256 digest of the leaf's DER-encoded SubjectPublicKeyInfo.
+1. Read `cert.pem` (full chain) and `key.pem` (private key) directly from
+   `MAILCOW_SSL_DIR`.
+2. Confirm that the public key of the first certificate in `cert.pem` matches
+   `key.pem`. Generate a `3 1 1` TLSA record using the SHA-256 digest of that
+   certificate's DER-encoded SubjectPublicKeyInfo.
 3. Update the RRset for each configured domain and `TLSA_PORT` when its record
    or TTL changes.
 4. Repeat after `POLL_INTERVAL_SECONDS`.
@@ -32,14 +32,14 @@ the mail FQDNs, while `DESEC_ZONE` contains the deSEC zone. For example,
 ## Configuration
 
 Copy [.env.example](.env.example) to `.env` and set the token, domains, and
-absolute path to Mailcow's `data/assets/ssl` directory. The sync process needs read
-access to the three PEM files.
+absolute path to Mailcow's `data/assets/ssl` directory. The sync process needs
+read access to `cert.pem` and `key.pem`.
 
 | Variable                | Required | Default                   | Description                                                     |
 | ----------------------- | -------- | ------------------------- | --------------------------------------------------------------- |
 | `DOMAIN_LIST`           | yes      |                           | Comma-separated mail FQDNs, for example `mail.example.com`      |
 | `DESEC_ZONE`            | yes      |                           | deSEC zone containing the mail FQDNs, for example `example.com` |
-| `MAILCOW_SSL_DIR`       | yes      |                           | Directory containing the three Mailcow PEM files                |
+| `MAILCOW_SSL_DIR`       | yes      |                           | Directory containing Mailcow's `cert.pem` and `key.pem`         |
 | `DESEC_TOKEN`           | yes      |                           | deSEC API token                                                 |
 | `TLSA_PORT`             | no       | `25`                      | Mail/service port used in the TLSA name                         |
 | `TIMEOUT_SECONDS`       | no       | `5`                       | deSEC HTTP timeout                                              |

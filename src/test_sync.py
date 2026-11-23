@@ -45,7 +45,6 @@ def certificate_and_key():
 def write_ssl_files(directory):
     certificate, key = certificate_and_key()
     additional_certificate, _ = certificate_and_key()
-    (directory / "nochain.pem").write_bytes(certificate)
     (directory / "cert.pem").write_bytes(certificate + additional_certificate)
     (directory / "key.pem").write_bytes(
         key.private_bytes(
@@ -82,7 +81,7 @@ def test_sync_reads_current_pems_without_dns(ssl_dir, monkeypatch):
         client.reset_mock()
 
 
-@pytest.mark.parametrize("filename", ["nochain.pem", "key.pem", "cert.pem"])
+@pytest.mark.parametrize("filename", ["key.pem", "cert.pem"])
 def test_sync_skips_inconsistent_pems(ssl_dir, filename):
     settings = Settings.from_environment()
     write_ssl_files(ssl_dir)
@@ -96,10 +95,11 @@ def test_sync_skips_inconsistent_pems(ssl_dir, filename):
     client.upsert_rrset.assert_not_called()
 
 
-def test_sync_skips_missing_leaf(ssl_dir):
+@pytest.mark.parametrize("filename", ["key.pem", "cert.pem"])
+def test_sync_skips_missing_pem(ssl_dir, filename):
     settings = Settings.from_environment()
     write_ssl_files(ssl_dir)
-    (ssl_dir / "nochain.pem").unlink()
+    (ssl_dir / filename).unlink()
     client = Mock()
 
     synchronize_all(settings, client)

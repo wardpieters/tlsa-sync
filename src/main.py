@@ -87,16 +87,13 @@ def _positive_float(name: str, default: float) -> float:
 
 
 def _read_tlsa_records(ssl_dir: Path) -> tuple[str, ...]:
-    leaf = x509.load_pem_x509_certificate((ssl_dir / "nochain.pem").read_bytes())
     fullchain = x509.load_pem_x509_certificates((ssl_dir / "cert.pem").read_bytes())
-    if leaf != fullchain[0]:
-        raise ValueError("nochain.pem does not match the first certificate in cert.pem")
-
+    leaf = fullchain[0]
     key = load_pem_private_key((ssl_dir / "key.pem").read_bytes(), password=None)
     leaf_spki = leaf.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     key_spki = key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     if leaf_spki != key_spki:
-        raise ValueError("key.pem does not match the certificate in nochain.pem")
+        raise ValueError("key.pem does not match the first certificate in cert.pem")
 
     return (f"3 1 1 {sha256(leaf_spki).hexdigest()}",)
 
