@@ -10,7 +10,8 @@ from hashlib import sha256
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     PublicFormat,
@@ -95,7 +96,27 @@ def _read_tlsa_records(ssl_dir: Path) -> tuple[str, ...]:
     if leaf_spki != key_spki:
         raise ValueError("key.pem does not match the first certificate in cert.pem")
 
-    return (f"3 1 1 {sha256(leaf_spki).hexdigest()}",)
+    records = (f"3 1 1 {sha256(leaf_spki).hexdigest()}",)
+    backup_ca = _highest_issuer(fullchain)
+    if backup_ca is not None:
+        records += (f"2 0 1 {backup_ca.fingerprint(hashes.SHA256()).hex()}",)
+
+    return records
+
+
+def _highest_issuer(fullchain: list[x509.Certificate]) -> x509.Certificate | None:
+    child = fullchain[0]
+    for issuer in fullchain[1:]:
+        try:
+            constraints = issuer.extensions.get_extension_for_class(x509.BasicConstraints)
+            if not constraints.value.ca:
+                break
+            child.verify_directly_issued_by(issuer)
+        except (x509.ExtensionNotFound, InvalidSignature, ValueError, UnsupportedAlgorithm):
+            break
+        child = issuer
+
+    return child if child is not fullchain[0] else None
 
 
 def _desec_subname(settings: Settings, domain: str) -> str:

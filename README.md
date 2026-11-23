@@ -11,10 +11,17 @@ to deSEC. By default it publishes `_25._tcp.<domain>` for every FQDN in
    `MAILCOW_SSL_DIR`.
 2. Confirm that the public key of the first certificate in `cert.pem` matches
    `key.pem`. Generate a `3 1 1` TLSA record using the SHA-256 digest of that
-   certificate's DER-encoded SubjectPublicKeyInfo.
+   certificate's DER-encoded SubjectPublicKeyInfo. When `cert.pem` includes a
+   verified CA issuer, add a `2 0 1` backup record using the SHA-256 digest of
+   the highest verified CA certificate in the supplied chain.
 3. Update the RRset for each configured domain and `TLSA_PORT` when its record
    or TTL changes.
 4. Repeat after `POLL_INTERVAL_SECONDS`.
+
+The backup record can authenticate a renewed certificate while the old TLSA
+RRset is cached, provided the server still presents a valid chain to the same
+CA certificate. If `cert.pem` contains only the leaf, the sync publishes only
+the leaf TLSA record.
 
 The current deSEC state is cached in `DESEC_CACHE_FILE`, so normal polling does
 not issue a deSEC GET request every time. Mount the cache directory when using

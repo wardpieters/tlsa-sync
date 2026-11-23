@@ -25,27 +25,31 @@ def ssl_dir(tmp_path, monkeypatch):
     return directory
 
 
-def certificate_and_key():
+def certificate_and_key(common_name="mail.example.com", issuer=None, *, ca=False):
     key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mail.example.com")])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    issuer_name, signing_key = (name, key) if issuer is None else (issuer[0].subject, issuer[1])
     now = datetime.now(timezone.utc)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)
-        .issuer_name(name)
+        .issuer_name(issuer_name)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + timedelta(days=1))
-        .sign(key, hashes.SHA256())
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        .sign(signing_key, hashes.SHA256())
     )
-    return certificate.public_bytes(serialization.Encoding.PEM), key
+    return certificate, key
 
 
-def write_ssl_files(directory):
-    certificate, key = certificate_and_key()
-    additional_certificate, _ = certificate_and_key()
-    (directory / "cert.pem").write_bytes(certificate + additional_certificate)
+def write_ssl_files(directory, issuer=None, chain=()):
+    certificate, key = certificate_and_key(issuer=issuer)
+    fullchain = b"".join(
+        cert.public_bytes(serialization.Encoding.PEM) for cert in (certificate, *chain)
+    )
+    (directory / "cert.pem").write_bytes(fullchain)
     (directory / "key.pem").write_bytes(
         key.private_bytes(
             serialization.Encoding.PEM,
@@ -67,10 +71,14 @@ def test_sync_reads_current_pems_without_dns(ssl_dir, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", reject_lookup)
     settings = Settings.from_environment()
     client = Mock()
+    anchor, anchor_key = certificate_and_key("Test root CA", ca=True)
+    unrelated_ca, _ = certificate_and_key("Test root CA", ca=True)
+    backup = f"2 0 1 {anchor.fingerprint(hashes.SHA256()).hex()}"
 
     previous = None
     for _ in range(2):
-        records = write_ssl_files(ssl_dir)
+        issuer = certificate_and_key("Test intermediate", issuer=(anchor, anchor_key), ca=True)
+        records = (*write_ssl_files(ssl_dir, issuer, (issuer[0], anchor, unrelated_ca)), backup)
         assert records != previous
         synchronize_all(settings, client)
         assert [call.args for call in client.upsert_rrset.call_args_list] == [
@@ -79,6 +87,19 @@ def test_sync_reads_current_pems_without_dns(ssl_dir, monkeypatch):
         ]
         previous = records
         client.reset_mock()
+
+
+@pytest.mark.parametrize("include_unrelated_ca", [False, True], ids=["leaf-only", "unrelated-ca"])
+def test_sync_uses_leaf_only_without_a_usable_ca(ssl_dir, include_unrelated_ca):
+    settings = Settings.from_environment()
+    unrelated_ca, _ = certificate_and_key("Unrelated CA", ca=True)
+    chain = (unrelated_ca,) if include_unrelated_ca else ()
+    records = write_ssl_files(ssl_dir, chain=chain)
+    client = Mock()
+
+    synchronize_all(settings, client)
+
+    assert [call.args[2] for call in client.upsert_rrset.call_args_list] == [records, records]
 
 
 @pytest.mark.parametrize("filename", ["key.pem", "cert.pem"])
