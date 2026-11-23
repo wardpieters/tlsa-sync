@@ -97,10 +97,13 @@ class DesecClient:
         if current is not None and current.records == desired and current.ttl == ttl:
             return False
 
-        response = self._client.put(
-            self._rrset_path(domain, subname, rrtype),
-            json={"records": list(desired), "ttl": ttl},
-        )
+        payload = {
+            "subname": subname.strip("."),
+            "type": rrtype.upper(),
+            "records": list(desired),
+            "ttl": ttl,
+        }
+        response = self._client.put(self._rrsets_path(domain), json=[payload])
         response.raise_for_status()
         self._cache[self._cache_key(domain, subname, rrtype)] = {
             "exists": True,
@@ -142,10 +145,14 @@ class DesecClient:
         return f"{domain.strip('.')}|{subname.strip('.')}|{rrtype.upper()}"
 
     @staticmethod
-    def _rrset_path(domain: str, subname: str, rrtype: str) -> str:
+    def _rrsets_path(domain: str) -> str:
         encoded_domain = quote(domain.strip("."), safe="")
+        return f"/domains/{encoded_domain}/rrsets/"
+
+    @classmethod
+    def _rrset_path(cls, domain: str, subname: str, rrtype: str) -> str:
         encoded_subname = quote(subname.strip("."), safe="")
-        return f"/domains/{encoded_domain}/rrsets/{encoded_subname}/{rrtype.upper()}/"
+        return f"{cls._rrsets_path(domain)}{encoded_subname}/{rrtype.upper()}/"
 
 
 def _normalize_record_text(record: object) -> str:
